@@ -13,17 +13,17 @@ Simulated a cloud security audit across four S3 buckets, each representing a dis
 
 ---
 
-### 🔧 Active Directory Attack & Detection Lab — *in progress*
-Multi-VM Active Directory environment for practicing common attack techniques (Kerberoasting, Pass-the-Hash, lateral movement) and building corresponding Splunk detections against Sysmon telemetry, mapped to MITRE ATT&CK.
+### ✅ [Network Threat Hunting Lab](./Network-threat-hunting-lab)
+Built an isolated two-VM lab (Suricata + Zeek) and ran two real attack scenarios — a TCP port scan and a bash reverse shell — against it. Discovered the default Suricata ruleset missed both, wrote and deployed custom detection rules to close each gap, then cross-validated every finding using Zeek's independent connection metadata. Includes a documented example of signature-based detection failing on a reverse shell that was still visible through behavioural/connection-duration analysis alone.
 
-**Tools:** Sysmon, Splunk, Active Directory, Windows Server
+**Tools:** Suricata, Zeek, VirtualBox (Internal Network), Kali Linux, `nmap`, `netcat`
 
 ---
 
-### ✅ [Network Threat Hunting Lab](./Network-threat-hunting-lab)
-Built an isolated two-VM lab (Suricata + Zeek) and ran two real attack scenarios — a TCP port scan and a bash reverse shell — against it. Discovered the default Suricata ruleset missed both, wrote and deployed custom detection rules to close each gap, then cross-validated every finding using Zeek's independent connection metadata. Includes a documented example of signature-based detection failing on a reverse shell that was still visible through behavioral/connection-duration analysis alone.
+### ✅ [Active Directory Attack & Detection Lab — Kerberoasting](./active-directory-kerberoasting-lab)
+Built a Windows Server 2025 domain, performed a Kerberoasting attack (MITRE ATT&CK T1558.003) from Kali with Impacket, and built the Splunk detection for it against Sysmon and Windows Security telemetry. Surfaced two findings only visible by running the attack: Server 2025's default RC4 deprecation blocked the attack at the protocol level, and under default audit settings the blocked attempt generated no log at all — a detection gap closed by enabling failure auditing and confirmed with a targeted SPL search.
 
-**Tools:** Suricata, Zeek, VirtualBox (Internal Network), Kali Linux, `nmap`, `netcat`
+**Tools:** Windows Server 2025, Active Directory, Splunk, Sysmon, Impacket, Kali Linux
 
 ---
 
@@ -34,4 +34,4 @@ Automated incident response pipeline: detection in Wazuh triggers enrichment via
 
 ## Background
 
-Built while transitioning into cybersecurity, backed by ISC2 Certified in Cybersecurity and Google Cybersecurity certifications. Each project follows the same standard: don't just configure something — break it, prove it's broken, investigate root cause, fix it, and prove the fix works.
+Built while transitioning into cybersecurity, backed by Google Cybersecurity certification and ISC2 Certified in Cybersecurity coursework (all domains complete; exam pending). Each project follows the same standard: don't just configure something — break it, prove it's broken, investigate root cause, fix it, and prove the fix works.
